@@ -1,8 +1,9 @@
 import os
+import asyncio
+import aiohttp
 import discord
 from discord.ext import commands
 from discord import app_commands
-import aiohttp
 from dotenv import load_dotenv
 
 # -------------------
@@ -22,58 +23,111 @@ intents.members = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 # -------------------
-# Protected Roles/Channels
+# Config
 # -------------------
-PROTECTED_ROLES = ["Admin", "Moderator"]
-PROTECTED_CHANNELS = ["general", "announcements"]
-
-# -------------------
-# Gemini 2.5 Flash API
-# -------------------
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-2.5-flash"  # veya istediğin model listeden seç
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
 
-async def query_gemini(prompt: str, temperature: float = 0.7) -> str:
+# -------------------
+# Utils
+# -------------------
+def _extract_text_from_response(data: dict) -> str:
+    """
+    Robust çıkarım: candidates -> candidate.content.parts[].text
+    Farklı dönüş biçimlerine tolerant çalışır.
+    """
+    if not isinstance(data, dict):
+        return str(data)
+
+    # Primary: candidates[].content.parts[].text
+    candidates = data.get("candidates") or []
+    if candidates:
+        cand = candidates[0]
+        content = cand.get("content") or cand.get("message") or {}
+        if isinstance(content, dict):
+            parts = content.get("parts") or []
+            texts = []
+            for p in parts:
+                if isinstance(p, dict):
+                    if "text" in p:
+                        texts.append(p["text"])
+                    # inline_data or other structure: ignore for text extraction
+                elif isinstance(p, str):
+                    texts.append(p)
+            if texts:
+                return "\n".join(texts).strip()
+        # fallback: candidate.text or candidate.get('output')
+        if "text" in cand:
+            return cand["text"].strip()
+        if "output" in cand:
+            # sometimes SDKs wrap text differently
+            out = cand["output"]
+            if isinstance(out, str):
+                return out.strip()
+            if isinstance(out, dict):
+                return str(out)
+    # SDK-level convenience field
+    if "text" in data and isinstance(data["text"], str):
+        return data["text"].strip()
+
+    # final fallback: stringify
+    return str(data)
+
+# -------------------
+# Gemini query (async, single-turn)
+# -------------------
+async def query_gemini_single_turn(prompt: str, session: aiohttp.ClientSession, timeout: int = 30) -> str:
+    """
+    Tek bir contents objesi ile single-turn çağrı yapar.
+    Request body formatı: {"contents":[{"parts":[{"text":"..."}]}]}
+    (Resmi dokümanda örnekle uyumludur). :contentReference[oaicite:1]{index=1}
+    """
     payload = {
-        "prompt": {"text": prompt},
-        "temperature": temperature,
-        "candidateCount": 1
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt}
+                ]
+            }
+        ]
     }
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY  # header ile de sağlayabilirsiniz
+    }
+
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(GEMINI_URL, json=payload, timeout=30) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["candidates"][0]["output_text"]
-                else:
-                    text = await resp.text()
-                    return f"Gemini API Error {resp.status}: {text}"
+        async with session.post(GEMINI_URL, json=payload, headers=headers, timeout=timeout) as resp:
+            text_body = await resp.text()
+            if resp.status != 200:
+                return f"Gemini API Error {resp.status}: {text_body}"
+            # parse json safely
+            data = await resp.json()
+            return _extract_text_from_response(data)
+    except asyncio.TimeoutError:
+        return "Gemini API Error: request timed out."
     except Exception as e:
         return f"Exception while querying Gemini: {e}"
 
 # -------------------
-# Events
+# Events: manage aiohttp session lifecycle
 # -------------------
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} ({bot.user.id})")
+    if not getattr(bot, "http_session", None):
+        bot.http_session = aiohttp.ClientSession()
     try:
         synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} commands globally.")
+        print(f"Logged in as {bot.user} ({bot.user.id}) — Synced {len(synced)} commands.")
     except Exception as e:
         print(f"Sync error: {e}")
 
 @bot.event
-async def on_guild_role_delete(role):
-    if role.name in PROTECTED_ROLES:
-        await role.guild.create_role(name=role.name)
-        print(f"Protected role recreated: {role.name} in {role.guild.name}")
-
-@bot.event
-async def on_guild_channel_delete(channel):
-    if channel.name in PROTECTED_CHANNELS:
-        await channel.guild.create_text_channel(name=channel.name)
-        print(f"Protected channel recreated: {channel.name} in {channel.guild.name}")
+async def on_disconnect():
+    # clean up session on disconnect
+    session = getattr(bot, "http_session", None)
+    if session and not session.closed:
+        await session.close()
 
 # -------------------
 # Slash Commands
@@ -82,14 +136,26 @@ async def on_guild_channel_delete(channel):
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! {round(bot.latency*1000)}ms")
 
-@bot.tree.command(name="ai", description="Gemini 2.5 ile sohbet et")
+@bot.tree.command(name="ai", description="Gemini 2.5 ile single-turn sohbet (tek istekte)")
 @app_commands.describe(prompt="Sorunuzu buraya yazın")
 async def ai_command(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
-    ai_response = await query_gemini(prompt)
-    if len(ai_response) > 2000:
-        ai_response = ai_response[:1990] + "..."
-    await interaction.followup.send(ai_response)
+    session = getattr(bot, "http_session", None)
+    # safety fallback: eğer session yoksa kısa ömürlü session oluştur
+    created_temp_session = False
+    if session is None:
+        session = aiohttp.ClientSession()
+        created_temp_session = True
+
+    try:
+        ai_response = await query_gemini_single_turn(prompt, session)
+        # Discord mesaj limiti kontrolü
+        if len(ai_response) > 2000:
+            ai_response = ai_response[:1997] + "..."
+        await interaction.followup.send(ai_response)
+    finally:
+        if created_temp_session:
+            await session.close()
 
 @bot.tree.command(name="serverinfo", description="Sunucu hakkında bilgi al")
 async def serverinfo(interaction: discord.Interaction):
