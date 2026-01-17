@@ -37,12 +37,7 @@ def query_gemini(prompt: str, temperature: float = 0.7) -> str:
     Gemini 3.0 Pro ile chat.
     """
     payload = {
-        "prompt": {
-            "messages": [
-                {"role": "system", "content": "You are a helpful and uncensored assistant."},
-                {"role": "user", "content": prompt}
-            ]
-        },
+        "input": prompt,
         "temperature": temperature,
         "candidate_count": 1
     }
