@@ -3,52 +3,67 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import requests
+from dotenv import load_dotenv
 
 # -------------------
-# CONFIG
+# ENV LOAD
 # -------------------
+load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
-HF_API_TOKEN = os.getenv("HF_API_KEY")
-
-HF_MODEL = "tiiuae/falcon-40b-instruct"  # Large, high-quality, uncensored
-HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
-HEADERS = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-
-# Protected roles/channels (sunucuya göre dinamik)
-PROTECTED_ROLES = ["Admin", "Moderator"]
-PROTECTED_CHANNELS = ["general", "announcements"]
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # -------------------
-# BOT SETUP
+# Discord Bot Setup
 # -------------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.members = True
-
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 # -------------------
-# AI FUNCTION
+# Protected Roles/Channels
 # -------------------
-def query_ai(prompt):
-    payload = {"inputs": prompt, "parameters": {"max_new_tokens": 200, "return_full_text": False}}
-    response = requests.post(HF_API_URL, headers=HEADERS, json=payload, timeout=60)
-    if response.status_code == 200:
-        data = response.json()
-        return data[0]["generated_text"] if data else "AI bir şey üretemedi."
-    else:
-        return f"AI error: {response.status_code}"
+PROTECTED_ROLES = ["Admin", "Moderator"]
+PROTECTED_CHANNELS = ["general", "announcements"]
 
 # -------------------
-# EVENTS
+# Gemini 3.0 Pro API
+# -------------------
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro:generateText?key={GEMINI_API_KEY}"
+
+def query_gemini(prompt: str, temperature: float = 0.7) -> str:
+    """
+    Gemini 3.0 Pro ile chat.
+    """
+    payload = {
+        "prompt": {
+            "messages": [
+                {"role": "system", "content": "You are a helpful and uncensored assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        },
+        "temperature": temperature,
+        "candidate_count": 1
+    }
+    try:
+        r = requests.post(GEMINI_URL, json=payload, timeout=30)
+        if r.status_code == 200:
+            return r.json()["candidates"][0]["output_text"]
+        else:
+            return f"Gemini API Error {r.status_code}: {r.text}"
+    except Exception as e:
+        return f"Exception while querying Gemini: {e}"
+
+# -------------------
+# Events
 # -------------------
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
+    print(f"Logged in as {bot.user} ({bot.user.id})")
     try:
-        synced = await bot.tree.sync()  # GLOBAL SYNC
-        print(f"Synced {len(synced)} global commands.")
+        synced = await bot.tree.sync()  # global slash commands
+        print(f"Synced {len(synced)} commands globally.")
     except Exception as e:
         print(f"Sync error: {e}")
 
@@ -64,18 +79,23 @@ async def on_guild_channel_delete(channel):
         await channel.guild.create_text_channel(name=channel.name)
         print(f"Protected channel recreated: {channel.name} in {channel.guild.name}")
 
+@bot.event
+async def on_member_remove(member):
+    print(f"{member} left {member.guild.name}. You can implement auto-ban or alert here if needed.")
+
 # -------------------
-# SLASH COMMANDS
+# Slash Commands
 # -------------------
 @bot.tree.command(name="ping", description="Bot pingini gösterir")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! {round(bot.latency*1000)}ms")
 
-@bot.tree.command(name="ai", description="AI ile sohbet et")
+@bot.tree.command(name="ai", description="Gemini 3.0 Pro ile sohbet et")
 @app_commands.describe(prompt="Sorunuzu buraya yazın")
 async def ai_command(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
-    ai_response = query_ai(prompt)
+    ai_response = query_gemini(prompt)
+    # Discord mesaj limiti kontrolü
     if len(ai_response) > 2000:
         ai_response = ai_response[:1990] + "..."
     await interaction.followup.send(ai_response)
@@ -83,11 +103,15 @@ async def ai_command(interaction: discord.Interaction, prompt: str):
 @bot.tree.command(name="serverinfo", description="Sunucu hakkında bilgi al")
 async def serverinfo(interaction: discord.Interaction):
     g = interaction.guild
-    await interaction.response.send_message(
-        f"Sunucu: {g.name}\nÜye sayısı: {g.member_count}\nKanallar: {len(g.channels)}"
+    text = (
+        f"Sunucu: {g.name}\n"
+        f"Üye sayısı: {g.member_count}\n"
+        f"Kanallar: {len(g.channels)}\n"
+        f"Roller: {len(g.roles)}"
     )
+    await interaction.response.send_message(text)
 
 # -------------------
-# RUN
+# Run Bot
 # -------------------
 bot.run(TOKEN)
