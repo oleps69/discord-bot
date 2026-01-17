@@ -37,14 +37,16 @@ def query_gemini(prompt: str, temperature: float = 0.7) -> str:
     Gemini 3.0 Pro ile chat.
     """
     payload = {
-        "input": prompt,
+        "prompt": {
+            "text": prompt
+        },
         "temperature": temperature,
-        "candidate_count": 1
+        "candidateCount": 1
     }
     try:
         r = requests.post(GEMINI_URL, json=payload, timeout=30)
         if r.status_code == 200:
-            return r.json()["candidates"][0]["output_text"]
+            return r.json()["candidates"][0]["output"]
         else:
             return f"Gemini API Error {r.status_code}: {r.text}"
     except Exception as e:
