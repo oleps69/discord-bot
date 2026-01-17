@@ -6,10 +6,9 @@ import requests
 # -------------------
 # CONFIG
 # -------------------
-TOKEN = "MTQ2MjE4ODEwNTg1NDQ4NDU1Mw.GmFU1M.ajxn9vBHxraJMOGcA8kpXO5_kXNOQZN98hTjp0"
+TOKEN = os.getenv("BOT_TOKEN")
+HF_API_TOKEN = os.getenv("HF_API_KEY")
 
-# HuggingFace API
-HF_API_TOKEN = "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"
 HF_MODEL = "tiiuae/falcon-40b-instruct"  # Large, high-quality, uncensored
 HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 HEADERS = {"Authorization": f"Bearer {HF_API_TOKEN}"}
