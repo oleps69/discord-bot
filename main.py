@@ -226,12 +226,12 @@ async def no_cmd(interaction: discord.Interaction, word: str, level: int):
     banned_words[interaction.guild.id][word.lower()] = level
     await interaction.response.send_message(f"✓ ||{word}|| [{level}]", ephemeral=True)
 
-@bot.tree.command(name="ping", description="Bot pingini gösterir")
+@bot.tree.command(name="ping", description="pong")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! {round(bot.latency*1000)}ms")
 
-@bot.tree.command(name="ai", description="Gemini 2.5 ile single-turn sohbet (tek istekte)")
-@app_commands.describe(prompt="Sorunuzu buraya yazın")
+@bot.tree.command(name="ai", description="gemini 2.5)")
+@app_commands.describe(prompt="ask something")
 async def ai_command(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
     session = getattr(bot, "http_session", None)
@@ -249,7 +249,7 @@ async def ai_command(interaction: discord.Interaction, prompt: str):
         if created_temp_session:
             await session.close()
 
-@bot.tree.command(name="serverinfo", description="Sunucu hakkında bilgi al")
+@bot.tree.command(name="serverinfo", description="dont use if you are not white")
 async def serverinfo(interaction: discord.Interaction):
     g = interaction.guild
     text = (
